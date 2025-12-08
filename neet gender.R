@@ -1,5 +1,56 @@
 library(tidyverse)
 
+setwd("/Users/margauxbonnaffoux/Desktop/data sets")
+continents <- read_csv("continents-according-to-our-world-in-data.csv") %>%
+  select(Entity, Code, Continent) %>%
+  distinct() %>%
+  rename(
+    country_name = Entity,
+    iso3c        = Code
+  )
+
+neet_total <- read_csv("youth-not-in-education-employment-training.csv") %>%
+  rename(
+    country_name = Entity,
+    iso3c        = Code,
+    year         = Year,
+    neet_total   = `Share of youth not in education, employment or training, total (% of youth population)`
+  )
+
+neet_male_raw   <- read_csv("neet_male_worldbank.csv",   skip = 4)
+neet_female_raw <- read_csv("neet_female_worldbank.csv", skip = 4)
+
+wb_to_long <- function(df, value_name) {
+  df %>%
+    pivot_longer(
+      cols      = matches("^[0-9]{4}$"),
+      names_to  = "year",
+      values_to = value_name
+    ) %>%
+    mutate(year = as.integer(year)) %>%
+    rename(
+      iso3c        = `Country Code`,
+      country_name = `Country Name`
+    ) %>%
+    select(country_name, iso3c, year, all_of(value_name))
+}
+
+neet_male <- wb_to_long(neet_male_raw,   "neet_male")
+neet_female <- wb_to_long(neet_female_raw, "neet_female")
+
+#merge male + female + total NEET + continent 
+neet_gender_full <- neet_total %>%
+  full_join(neet_male,   by = c("iso3c", "country_name", "year")) %>%
+  full_join(neet_female, by = c("iso3c", "country_name", "year")) %>%
+  left_join(continents,  by = c("iso3c", "country_name"))
+
+#keep only the 6 continents 
+neet_gender_full <- neet_gender_full %>%
+  filter(!is.na(Continent), Continent != "Antarctica")
+
+#save the merged CSV
+write_csv(neet_gender_full, "neet_gender_merged.csv")
+
 #read base data
 continents   <- read.csv("continents-according-to-our-world-in-data.csv")
 youth_neet   <- read.csv("youth-not-in-education-employment-training.csv")
