@@ -1,0 +1,281 @@
+#read csv
+continents <- read.csv("continents-according-to-our-world-in-data.csv")
+gdp_per_capita <- read.csv("gdp.csv")
+youth_neet <- read.csv("youth-not-in-education-employment-training.csv")
+
+#remove rows with code - NA
+gdp_per_capita <- gdp_per_capita %>% 
+  filter(Code != "", !is.na(Code))
+view(gdp)
+
+#remove the rows with country = world
+gdp_per_capita <- gdp_per_capita %>% 
+  filter(Country != "World", Code != "OWID_WRL")
+
+#reading population data in order to weigh the data by population
+population <- read.csv("population.csv")
+
+population_raw <- read.csv(
+  "population.csv",
+  skip = 4,         #skip the first 4 metadata rows
+  check.names = TRUE #ensure column names are cleaned
+)
+
+population_long <- population_raw %>%
+  select(Country.Name, Country.Code, starts_with("X")) %>%   #keep the needed columns
+  pivot_longer(                          #reshape raw population data into tidy long format
+    cols = starts_with("X"),
+    names_to   = "Year",
+    names_prefix = "X",       # remove the leading "X"
+    values_to  = "Population"
+  ) %>%
+  mutate(Year = as.integer(Year)) %>%  #convert year to numerical form
+  rename(
+    Entity = Country.Name,
+    Code   = Country.Code
+  )
+
+#joining gdp per capita with population data set
+gdp_pop <- gdp_per_capita %>%
+  inner_join(
+    population_long,
+    by = c("Code", "Year")
+  )
+
+gdp_pop <- gdp_pop %>%
+  select(Entity = Entity.x, Code, Year,
+         GDP_per_capita = GDP.per.capita..PPP..constant.2017.international...,
+         Continent, Population)
+
+gdp_pop <- gdp_pop %>%
+  select(-Entity.y) %>% 
+  rename(Entity = Entity.x) #removing additional unnecessary columns
+
+gdp_pop <- gdp_pop %>%
+  rename(GDP_pc  = `GDP.per.capita..PPP..constant.2017.international...`)
+
+continents <- continents %>%
+  rename(Country = Entity)
+
+#joining gdp per capita with population with continents
+gdp_pop <- left_join(gdp_pop, continents, by = "Code")
+
+gdp_pop <- gdp_pop %>%
+  select(-Country) 
+
+#scale the data
+gdp_pop_scaled <- gdp_pop %>%
+  group_by(Continent, Year.x) %>%
+  mutate(
+    continent_pop = sum(Population, na.rm = TRUE) #creating a new column and compute each continent's total population
+  )
+
+gdp_pop_scaled <- gdp_pop_scaled %>%
+  mutate(
+    pop_share = Population / continent_pop #calculate each country's population share within its continent year group
+  )
+
+# Keep data from 2000 to 2021
+gdp_pop_scaled <- gdp_pop_scaled %>%
+  filter(Year.x >= 2000, Year.x <= 2021)
+
+#calculate population weighted continental GDP per capita for each year
+continent_gdp <- gdp_pop_scaled %>%
+  group_by(Continent, Year.x) %>%
+  summarise(
+    GDP_pc_weighted = sum(GDP_pc * pop_share, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#calculate annual GDP per capita growth for each continent
+continent_growth <- continent_gdp %>%
+  arrange(Continent, Year.x) %>%
+  group_by(Continent) %>%
+  mutate(
+    GDP_pc_growth = (GDP_pc_weighted - lag(GDP_pc_weighted)) /
+      lag(GDP_pc_weighted) * 100
+  ) %>%
+  ungroup()
+
+#plotting the line graph 
+ggplot(continent_growth,
+       aes(x = Year.x,
+           y = GDP_pc_growth,
+           colour = Continent,
+           group = Continent)) +
+  annotate("rect",
+           xmin = 2008, xmax = 2009,
+           ymin = -Inf, ymax = Inf,
+           alpha = 0.15, fill = "grey70") +
+  annotate("rect",
+           xmin = 2020, xmax = 2021,
+           ymin = -Inf, ymax = Inf,
+           alpha = 0.15, fill = "grey70") +
+  annotate("text",
+           x = 2008.5, y = 7.5, label = "GFC",
+           size = 3, fontface = "bold", color = "grey30") +
+  annotate("text",
+           x = 2019, y = 7.5, label = "COVID-19",
+           size = 3, fontface = "bold", color = "grey30") +
+  geom_line(linewidth = 1) +
+  geom_point(size = 1.5) +
+  facet_wrap(~ Continent, ncol = 3)+ 
+  labs(
+    title = "GDP per capita growth rate (2000-2021)",
+    x = "Year",
+    y = "GDP per capita growth rate (%)",
+    colour = "Continent"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold"),
+    legend.position = "top"
+  )
+
+#categorising countries by LDCs and non-LDCs
+ldc_list <- c(
+  # Africa (32)
+  "Angola", "Benin", "Burkina Faso", "Burundi", "Central African Republic",
+  "Chad", "Comoros", "Democratic Republic of the Congo", "Djibouti", "Eritrea",
+  "Ethiopia", "Gambia", "Guinea", "Guinea-Bissau", "Lesotho", "Liberia",
+  "Madagascar", "Malawi", "Mali", "Mauritania", "Mozambique", "Niger",
+  "Rwanda", "Senegal", "Sierra Leone", "Somalia", "South Sudan", "Sudan",
+  "Togo", "Uganda", "United Republic of Tanzania", "Zambia",
+  
+  # Asia (8)
+  "Afghanistan", "Bangladesh", "Cambodia", "Lao People's Democratic Republic",
+  "Myanmar", "Nepal", "Timor-Leste", "Yemen",
+  
+  # Caribbean (1)
+  "Haiti",
+  
+  # Pacific (3)
+  "Kiribati", "Solomon Islands", "Tuvalu"
+)
+
+#renaming some countries in the list so that they will match with the dataset
+ldc_list[ldc_list == "Democratic Republic of the Congo"] <- "Democratic Republic of Congo"
+ldc_list[ldc_list == "Lao People's Democratic Republic"] <- "Laos"
+ldc_list[ldc_list == "United Republic of Tanzania"] <- "Tanzania"
+
+#create a lookup table marking which countries are LDCs
+ldc_df <- data.frame(
+  Entity = ldc_list,
+  is_ldc = TRUE
+)
+
+#joining gdp per capita with continent data set
+gdp <- gdp_per_capita %>%
+  left_join(continents_map, by = c("Entity", "Code"))
+view(gdp)
+
+#remove rows with code - NA
+gdp <- gdp %>% 
+  filter(Code != "", !is.na(Code))
+view(gdp)
+
+#remove the rows with country = world
+gdp <- gdp %>% 
+  filter(Country != "World", Code != "OWID_WRL")
+
+#keep time frame within 2000n and 2021 and rename the columns
+gdp_class_00_2020 <- gdp %>%
+  filter(Year >= 2000, Year <= 2021) %>%
+  rename(GDP_pc = GDP.per.capita..PPP..constant.2017.international...)
+
+#calculate gdp per capita growth for country
+country_growth <- gdp_00_20 %>%
+  arrange(Code, Year) %>%
+  group_by(Code, Entity, Continent, group, is_ldc) %>%
+  mutate(
+    growth = (GDP_pc - lag(GDP_pc)) / lag(GDP_pc) * 100
+  ) %>%
+  ungroup()
+
+#average gdp growth over the period for each country
+country_mean <- country_growth %>%
+  group_by(Code, Entity, Continent, group, is_ldc) %>%
+  summarise(
+    mean_growth = mean(growth, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#apply benchmark by LDC status and flag countries meeting the benchmarks (4% - non LDCs, 7% - LDCs)
+clean_country_mean <- clean_country_mean %>%
+  mutate(
+    threshold    = if_else(is_ldc, 7, 4),
+    meets_target = mean_growth >= threshold
+  )
+
+#proportion of countries meeting target by continent
+continent_prop <- clean_country_mean %>%
+  group_by(Continent) %>%
+  summarise(
+    prop_countries_meeting = mean(meets_target),       # TRUE = 1, FALSE = 0
+    countries_meeting      = sum(meets_target),
+    total_countries        = n(),
+    .groups = "drop"
+  )
+
+#plot the bar chart for proportion of continent that achieved sustained growth
+ggplot(continent_prop,
+       aes(x = Continent,
+           y = prop_countries_meeting,
+           fill = Continent)) +
+  geom_col() +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 1),
+    limits = c(0, 0.8)          # adjust max if you want more/less headroom
+  ) +
+  labs(
+    title = "Sustained Economic Growth by Continent",
+    x = "Continent",
+    y = "Percentage (%)",
+    fill = "Continent"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title       = element_text(hjust = 0.5, face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+
+#filter out to keep LDCs only to see their average growth
+ldc_plot <- clean_country_mean %>%
+  filter(is_ldc) %>%                        # keep only LDCs
+  group_by(Continent) %>%
+  arrange(mean_growth, .by_group = TRUE) %>%
+  mutate(
+    Entity_f = factor(Entity, levels = unique(Entity))  # ordered within continent
+  ) %>%
+  ungroup()
+
+library(ggplot2)
+
+#plot the bar chart
+ggplot(ldc_plot,
+       aes(x = mean_growth,
+           y = Entity_f,
+           fill = mean_growth)) +
+  geom_col() +
+  facet_grid(Continent ~ ., scales = "free_y", space = "free_y", switch = "y") +
+  geom_vline(xintercept = 7, linetype = "dashed") +  # 7% SDG target line
+  scale_fill_gradient2(
+    name = "Avg GDP growth (%)",
+    low = "#FF00FF", mid = "#D9A7FF", high = "#00E5FF",
+    midpoint = 0
+  ) +
+  labs(
+    title = "Average annual GDP per capita growth of LDCs by Continent",
+    x = "Average annual GDP per capita growth (%)",
+    y = NULL,
+    caption = "Growth = mean year-on-year % change (2000 - 2020). Dotted line = 7% SDG target for LDCs."
+  ) +
+  theme_minimal() +
+  theme(
+    strip.background = element_rect(fill = "grey90", colour = NA),
+    strip.text.y = element_text(face = "bold", size = 6),
+    panel.grid.major.y = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )  
+
