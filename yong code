@@ -1,0 +1,85 @@
+library(tidyverse)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+world <- ne_countries(scale = "medium", returnclass = "sf") %>%
+  select(iso_a3, name_long, geometry)
+
+gdp <- read_csv("C:/Users/yongg/Downloads/gdp-per-capita-worldbank.csv")
+
+latest_year <- max(gdp$Year, na.rm = TRUE)
+
+gdp_latest <- gdp %>%
+  filter(
+    Year == latest_year,
+    !is.na(Code),
+    !is.na(`GDP per capita, PPP (constant 2017 international $)`)
+  ) %>%
+  transmute(
+    iso_a3 = Code,
+    gdp_pc = `GDP per capita, PPP (constant 2017 international $)`
+  )
+
+cuts <- quantile(gdp_latest$gdp_pc, probs = c(0.25, 0.50, 0.75), na.rm = TRUE)
+
+gdp_latest <- gdp_latest %>%
+  mutate(
+    income_group = case_when(
+      gdp_pc <= cuts[1] ~ "Low-income countries",
+      gdp_pc <= cuts[2] ~ "Lower-middle-income countries",
+      gdp_pc <= cuts[3] ~ "Upper-middle-income countries",
+      TRUE ~ "High-income countries"
+    ),
+    income_group = factor(
+      income_group,
+      levels = c(
+        "Low-income countries",
+        "Lower-middle-income countries",
+        "Upper-middle-income countries",
+        "High-income countries"
+      )
+    )
+  )
+
+world_income <- world %>%
+  left_join(gdp_latest, by = "iso_a3")
+
+ggplot(world_income) +
+  geom_sf(aes(fill = income_group), color = "white", size = 0.12) +
+  scale_fill_manual(
+    values = c(
+      "Low-income countries" = "#000000",
+      "Lower-middle-income countries" = "#636363",
+      "Upper-middle-income countries" = "#fdd0a2",
+      "High-income countries" = "#fed976"
+    ),
+    na.value = "grey90",
+    name = ""
+  ) +
+  theme_minimal(base_size = 14) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(
+      size = 16,
+      hjust = 0.5,
+      margin = margin(b = 10)
+    ),
+    plot.caption = element_text(
+      size = 9,
+      hjust = 0.5,
+      margin = margin(t = 10)
+    ),
+    legend.position = "right",
+    legend.key.size = unit(0.6, "cm"),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    plot.margin = margin(10, 10, 10, 10),
+    legend.text = element_text(size = 11)
+  ) +
+  labs(
+    title = paste0("Income Groups Based on GDP per Capita (PPP), ", latest_year),
+    caption = "Classification: Quartiles of GDP per capita (PPP)"
+  )
+
