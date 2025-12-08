@@ -17,7 +17,7 @@ neet_total <- read_csv("youth-not-in-education-employment-training.csv") %>%
     neet_total   = `Share of youth not in education, employment or training, total (% of youth population)`
   )
 
-neet_male_raw   <- read_csv("neet_male_worldbank.csv",   skip = 4)
+neet_male_raw   <- read_csv("neet_male_worldbank.csv",   skip = 4) #skip bc dont contain data
 neet_female_raw <- read_csv("neet_female_worldbank.csv", skip = 4)
 
 wb_to_long <- function(df, value_name) {
