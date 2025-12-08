@@ -1,0 +1,131 @@
+continents <- read.csv("continents-according-to-our-world-in-data.csv")
+gdp_per_capita <- read.csv("gdp.csv")
+youth_neet <- read.csv("youth-not-in-education-employment-training.csv")
+
+
+library(tidyverse)
+library(dplyr)
+
+
+#testing reliability of GDP per capita data
+
+#continent-map
+library(dplyr)
+
+continents_map <- continents %>%
+  group_by(Entity, Code) %>%
+  summarise(
+    Continent = first(na.omit(Continent)),
+    .groups = "drop"
+  )
+
+#joining gdp per capita with continent data set
+gdp <- gdp_per_capita %>%
+  left_join(continents_map, by = c("Entity", "Code"))
+view(gdp)
+
+#rename columns
+gdp <- gdp %>%
+  rename(
+    Country = Entity,
+    GDP_pc  = `GDP.per.capita..PPP..constant.2017.international...`
+  )
+
+#remove rows with code - NA
+gdp <- gdp %>% 
+  filter(Code != "", !is.na(Code))
+view(gdp)
+
+#remove the rows with country = world
+gdp <- gdp %>% 
+  filter(Country != "World", Code != "OWID_WRL") 
+
+#keeping year 2000 - 2021
+gdp <-gdp |>
+  filter(Year >= 2000, Year <= 2021)
+
+full_panel <-gdp |>
+     distinct(Country, Continent) |> #create a complete country year panel for 2000 - 2021
+     tidyr::crossing(Year = 2000:2021) #so that every country has one row for each year even if value is NA
+
+gdp_completed <-
+     full_panel |>
+     left_join(gdp, by = c("Country", "Continent", "Year"))
+
+#calculate % of NA values per country
+country_missing_summary <-
+  gdp_completed |>
+  summarise(
+    missing_count = sum(is.na(GDP_pc)),
+    total_count   = n(),        
+    missing_pct   = (missing_count / total_count) * 100,
+    .by = c(Country, Continent)
+  )
+
+#calculate % of NA values per continent
+continent_missing_summary <-
+  country_missing_summary |>
+  summarise(
+    continent_missing_pct = mean(missing_pct),
+    .by = Continent
+  )
+
+#testing reliability of youth NEET data
+
+#joining youth NEET with continent data set
+neet <- left_join(youth_neet, continents,
+                  by = c("Entity", "Code", "Year"))
+
+#rename columns
+neet <- neet %>% 
+  rename(
+    Country   = Entity,
+    neet_share = `Share.of.youth.not.in.education..employment.or.training..total....of.youth.population.`
+  )
+
+#adding the continent to each row 
+continent_lookup <- continents %>%
+     filter(Year == 2015) %>%        
+     select(Code, Continent) %>%     
+     distinct()                      
+ 
+neet <- neet %>%
+   select(-Continent) %>%                  # remove old NA-heavy Continent column
+   left_join(continent_lookup, by = "Code")
+
+countries_neet <-
+  neet |>
+  distinct(Country, Continent)
+
+#keeping year 2015 - 2020
+years_neet <- 2015:2020
+
+neet_full_panel <-
+  countries_neet |>
+  tidyr::crossing(Year = years_neet)
+
+neet_completed <-
+  neet_full_panel |>
+  left_join(neet, by = c("Country", "Continent", "Year"))
+
+#calculate % of NA values per country
+country_neet_missing <-
+  neet_completed |>
+  summarise(
+    missing_count = sum(is.na(neet_share)),
+    total_count   = n(),                         
+    missing_pct   = (missing_count / total_count) * 100,
+    .by = c(Country, Continent)
+  )
+
+#calculate % of NA values per continent
+continent_neet_missing <-
+  country_neet_missing |>
+  summarise(
+    continent_missing_pct = mean(missing_pct),
+    .by = Continent
+  )
+
+view(continent_neet_missing)
+
+
