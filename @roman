@@ -1,0 +1,340 @@
+---
+title: "SDG 8 – Data Analysis"
+author: "Group"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    theme: cosmo
+---
+
+# Introduction
+
+This report analyses progress towards SDG 8 (Decent Work and Economic Growth) using
+World Bank / OWID data on GDP per capita and youth NEET (Not in Employment,
+Education or Training). We examine:
+
+- SDG thresholds (Figures 1–2)  
+- Data availability (Figures 3–4)  
+- GDP growth dynamics and LDC performance (Figures 5–7)  
+- Youth NEET outcomes across continents and globally (Figures 8–11)  
+
+All figures are reproducible directly from this script.
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo       = FALSE,
+  message    = FALSE,
+  warning    = FALSE,
+  fig.width  = 10,
+  fig.height = 6,
+  fig.align  = "center"
+)
+
+library(tidyverse)
+library(scales)
+library(knitr)
+library(forcats)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(viridis)
+
+theme_set(
+  theme_minimal(base_size = 12) +
+    theme(
+      plot.title    = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+)
+
+continents_raw <- read.csv("continents-according-to-our-world-in-data.csv") |> as_tibble()
+gdp_raw        <- read.csv("gdp.csv") |> as_tibble()
+neet_raw       <- read.csv("youth-not-in-education-employment-training.csv") |> as_tibble()
+population_raw <- read.csv("population.csv", skip = 4, check.names = TRUE) |> as_tibble()
+
+continents_map <- continents_raw |> select(Code, Continent) |> distinct()
+
+if (!"Country" %in% names(gdp_raw)) {
+  nm <- intersect(c("Country","Country.Name","Entity","country","COUNTRY"), names(gdp_raw))
+  if (length(nm)==0) nm <- names(gdp_raw)[1]
+  gdp_raw <- gdp_raw |> rename(Country = all_of(nm[1]))
+}
+
+if (!"Country" %in% names(neet_raw)) {
+  nm <- intersect(c("Country","Country.Name","Entity","country","COUNTRY"), names(neet_raw))
+  if (length(nm)==0) nm <- names(neet_raw)[1]
+  neet_raw <- neet_raw |> rename(Country = all_of(nm[1]))
+}
+
+gdp_col <- names(gdp_raw)[grepl("gdp", names(gdp_raw), ignore.case = TRUE) &
+                          grepl("capita", names(gdp_raw), ignore.case = TRUE)]
+gdp_raw <- gdp_raw |> rename(GDP_pc = all_of(gdp_col[1]))
+
+neet_col <- names(neet_raw)[grepl("youth", names(neet_raw), ignore.case = TRUE) &
+                            grepl("not.in.education", names(neet_raw), fixed = TRUE)]
+neet_raw <- neet_raw |> rename(NEET_total = all_of(neet_col[1]))
+```
+
+# SDG Thresholds (Figures 1–2)
+
+```{r fig1-2}
+fig1 <- tibble(
+  `Type of economy` = c("LDC","Non-LDC"),
+  `Required GDP per capita growth rate` = c("7%","4%")
+)
+kable(fig1, caption="Figure 1 — Sustained growth thresholds")
+
+fig2 <- tibble(
+  `Initial NEET (2015)` = c("<10%","10–20%","20–30%","30–50%",">50%"),
+  `Required reduction`  = c("2%","5%","10%","15%","15%")
+)
+kable(fig2, caption="Figure 2 — Required NEET reduction thresholds")
+```
+
+# Data Missingness (Figures 3–4)
+
+```{r fig3-4}
+gdp <- gdp_raw |>
+  left_join(continents_map, by="Code") |>
+  filter(Code!="", Country!="World", Code!="OWID_WRL")
+
+full_panel_gdp <- gdp |> distinct(Country, Continent) |> tidyr::crossing(Year=2000:2020)
+
+gdp_completed <- full_panel_gdp |> left_join(gdp, by=c("Country","Continent","Year"))
+
+missing_gdp <- gdp_completed |>
+  group_by(Continent) |>
+  summarise(missing_pct = mean(is.na(GDP_pc))*100)
+
+kable(missing_gdp, digits=2,
+      caption="Figure 3 — Missing GDP per capita data by continent (2000–2020)")
+
+neet <- neet_raw |> left_join(continents_map, by="Code")
+
+full_panel_neet <- neet |> distinct(Country,Continent) |> tidyr::crossing(Year=2015:2020)
+
+neet_completed <- full_panel_neet |>
+  left_join(neet, by=c("Country","Continent","Year"))
+
+missing_neet <- neet_completed |>
+  group_by(Continent) |>
+  summarise(missing_pct = mean(is.na(NEET_total))*100)
+
+kable(missing_neet, digits=2,
+      caption="Figure 4 — Missing NEET data by continent (2015–2020)")
+```
+
+# GDP Growth & LDC Performance (Figures 5–7)
+
+```{r fig5-7}
+population_long <- population_raw |>
+  select(Country.Name, Country.Code, starts_with("X")) |>
+  pivot_longer(cols=starts_with("X"),
+               names_to="Year",
+               names_prefix="X",
+               values_to="Population") |>
+  mutate(Year=as.integer(Year), Population=as.numeric(Population)) |>
+  rename(Country=Country.Name, Code=Country.Code)
+
+gdp_pop <- gdp_raw |>
+  left_join(continents_map, by="Code") |>
+  inner_join(population_long, by=c("Code","Year")) |>
+  filter(!is.na(Continent))
+
+gdp_pop_scaled <- gdp_pop |>
+  filter(Year>=2000, Year<=2021) |>
+  group_by(Continent, Year) |>
+  mutate(continent_pop = sum(Population),
+         pop_share = Population / continent_pop) |>
+  ungroup()
+
+continent_gdp <- gdp_pop_scaled |>
+  group_by(Continent, Year) |>
+  summarise(GDP_pc_weighted = sum(GDP_pc * pop_share, na.rm=TRUE), .groups="drop")
+
+continent_growth <- continent_gdp |>
+  arrange(Continent, Year) |>
+  group_by(Continent) |>
+  mutate(growth = (GDP_pc_weighted - lag(GDP_pc_weighted)) / lag(GDP_pc_weighted) * 100) |>
+  ungroup()
+
+ggplot(continent_growth, aes(Year, growth, colour=Continent)) +
+  geom_hline(yintercept=0, linetype="dotted") +
+  geom_line(linewidth=1) +
+  geom_point(size=2) +
+  facet_wrap(~ Continent, ncol=3, scales="free_y") +
+  labs(
+    title = "Figure 5 — Population-weighted GDP per capita growth (2000–2021)",
+    x="Year", y="GDP per capita growth (%)"
+  )
+
+ldc_list <- c(
+"Angola","Benin","Burkina Faso","Burundi","Central African Republic","Chad",
+"Comoros","Democratic Republic of Congo","Djibouti","Eritrea","Ethiopia","Gambia",
+"Guinea","Guinea-Bissau","Lesotho","Liberia","Madagascar","Malawi","Mali",
+"Mauritania","Mozambique","Niger","Rwanda","Senegal","Sierra Leone","Somalia",
+"South Sudan","Sudan","Togo","Uganda","Tanzania","Zambia","Afghanistan",
+"Bangladesh","Cambodia","Laos","Myanmar","Nepal","Timor-Leste","Yemen",
+"Haiti","Kiribati","Solomon Islands","Tuvalu"
+)
+
+gdp_country <- gdp_raw |>
+  left_join(continents_map, by="Code") |>
+  filter(Year>=2000, Year<=2020) |>
+  mutate(is_ldc = Country %in% ldc_list)
+
+growth_country <- gdp_country |>
+  arrange(Code,Year) |>
+  group_by(Country,Continent,is_ldc) |>
+  mutate(growth = (GDP_pc - lag(GDP_pc))/lag(GDP_pc)*100) |>
+  summarise(mean_growth = mean(growth, na.rm=TRUE), .groups="drop") |>
+  mutate(target = if_else(is_ldc,7,4),
+         meets  = mean_growth >= target)
+
+continent_props <- growth_country |>
+  group_by(Continent) |>
+  summarise(share = mean(meets))
+
+ggplot(continent_props, aes(Continent, share, fill=Continent)) +
+  geom_col(width=0.7) +
+  scale_y_continuous(labels=percent, limits=c(0,1)) +
+  labs(
+    title="Figure 6 — Share of countries meeting sustained growth target",
+    y="Share of countries", x="Continent"
+  ) +
+  theme(legend.position="none")
+
+ldc_growth <- growth_country |>
+  filter(is_ldc) |>
+  arrange(Continent,mean_growth)
+
+ggplot(ldc_growth, aes(mean_growth, fct_reorder(Country,mean_growth), fill=mean_growth)) +
+  geom_col() +
+  facet_grid(Continent ~ ., scales="free_y", switch="y", space="free_y") +
+  geom_vline(xintercept=7, linetype="dashed", colour="red") +
+  scale_fill_viridis_c(option="C") +
+  labs(
+    title="Figure 7 — LDC average GDP per capita growth (2000–2020)",
+    x="Average annual growth (%)", y=NULL
+  )
+```
+
+# Youth NEET by Continent (Figure 8)
+
+```{r fig8}
+continents_file <- "continents-according-to-our-world-in-data.csv"
+neet_file       <- "youth-not-in-education-employment-training.csv"
+youth_pop_file  <- "population-by-age-group.csv"
+
+continents_neet <- read_csv(continents_file, show_col_types=FALSE)
+neet_neet       <- read_csv(neet_file, show_col_types=FALSE)
+youth_pop       <- read_csv(youth_pop_file, show_col_types=FALSE)
+
+youth_pop_filtered <- youth_pop |>
+  filter(Year %in% c(2015,2020)) |>
+  rename(Youth_Population =
+           `Population - Sex: all - Age: 15-24 - Variant: estimates`) |>
+  select(Entity,Code,Year,Youth_Population)
+
+neet_both <- neet_neet |>
+  filter(Year %in% c(2015,2020)) |>
+  rename(NEET = 4) |> select(Entity,Code,Year,NEET)
+
+neet_cont <- neet_both |>
+  left_join(continents_neet |> select(Entity,Code,Continent), by=c("Entity","Code"))
+
+neet_complete <- neet_cont |>
+  left_join(youth_pop_filtered, by=c("Code","Year"))
+
+neet_weighted <- neet_complete |>
+  filter(!is.na(Continent), !is.na(Youth_Population)) |>
+  group_by(Continent,Year) |>
+  summarise(weighted_NEET = sum(NEET*Youth_Population)/sum(Youth_Population)) |>
+  mutate(Year=factor(Year,levels=c("2015","2020")))
+
+ggplot(neet_weighted, aes(Continent, weighted_NEET, fill=Year)) +
+  geom_col(position="dodge") +
+  coord_flip() +
+  scale_fill_manual(values=c("2015"="#8a2999","2020"="#FDE724")) +
+  labs(
+    title="Figure 8 — Population-weighted Youth NEET (2015 vs 2020)",
+    x="Continent", y="NEET (% of youth)"
+  )
+```
+
+# Global NEET Maps (Figures 9–10)
+
+```{r fig9}
+neet_file <- "youth-not-in-education-employment-training.csv"
+
+neet_map <- read_csv(neet_file, show_col_types=FALSE)
+
+neet_2015 <- neet_map |> filter(Year==2015) |> rename(NEET=4) |> select(Entity,Code,NEET)
+
+world <- ne_countries(scale="medium", returnclass="sf")
+valid_iso <- world$iso_a3
+
+world_neet <- world |> left_join(neet_2015 |> filter(Code %in% valid_iso),
+                                 by=c("iso_a3"="Code"))
+
+ggplot(world_neet) +
+  geom_sf(aes(fill=NEET), colour="white", size=0.1) +
+  scale_fill_viridis(option="C", na.value="grey90") +
+  labs(
+    title="Figure 9 — Global Youth NEET, 2015",
+    subtitle="Share of youth not in education, employment or training"
+  )
+```
+
+```{r fig10}
+neet_2020 <- neet_map |> filter(Year==2020) |> rename(NEET=4)
+
+world2 <- ne_countries(scale="medium", returnclass="sf")
+
+world_neet20 <- world2 |>
+  left_join(neet_2020 |> filter(Code %in% world2$iso_a3),
+            by=c("iso_a3"="Code"))
+
+ggplot(world_neet20) +
+  geom_sf(aes(fill=NEET), colour="white", size=0.1) +
+  scale_fill_viridis(option="C", na.value="grey90") +
+  labs(
+    title="Figure 10 — Global Youth NEET, 2020",
+    subtitle="Share of youth not in education, employment or training"
+  )
+```
+
+# Gender NEET (Figure 11)
+
+```{r fig11}
+if (file.exists("youth-neet-by-sex.csv")) {
+  neet_sex <- read_csv("youth-neet-by-sex.csv", show_col_types=FALSE)
+
+  neet_sex_clean <- neet_sex |>
+    filter(Year %in% c(2015,2020)) |>
+    mutate(Sex=factor(Sex,levels=c("Male","Female")),
+           Year=factor(Year))
+
+  ggplot(neet_sex_clean, aes(Year,NEET, fill=Sex)) +
+    geom_col(position="dodge") +
+    facet_wrap(~ Continent) +
+    labs(
+      title="Figure 11 — NEET by Gender and Continent",
+      x="Year", y="NEET (%)", fill="Gender"
+    ) +
+    theme(legend.position="bottom")
+} else {
+  cat("Figure 11 skipped: youth-neet-by-sex.csv not found.")
+}
+```
+
+# Conclusion
+
+SDG 8 progress varies significantly across continents.  
+LDCs remain far below the 7% growth target, while youth NEET levels remain high in several regions.  
+This analytical framework can be re-run with updated data to monitor SDG momentum.
+
